@@ -19,4 +19,8 @@ Three areas, roughly:
 
 Short and practical over long and exhaustive. Some posts will be a full walkthrough with working code; others will be a page of notes on a pattern or a tool that saved me from a mistake I'd already made once. I'd rather publish something useful at the length it deserves than pad it out to look more substantial than it is.
 
+## How this actually gets written
+
+Worth being upfront about: the source material behind most of these posts is my own notes, taken the way notes actually get taken — bullet points, half-sentences, shorthand only I'd understand. Not something I'd hand someone to read as-is. I use Claude to turn that into an actual, readable post — I still own the content, the corrections, and the opinions in it, but the drafting help is real and I'd rather say so than have anyone wonder.
+
 First proper post lands soon. If there's something specific from that list you'd want covered first, [get in touch](/#contact) — I'm reading.
