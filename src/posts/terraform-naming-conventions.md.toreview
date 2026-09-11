@@ -1,0 +1,194 @@
+---
+title: Terraform naming conventions
+date: 2026-08-14
+excerpt: A practical naming standard for resources, variables, and outputs, based on the terraform-best-practices.com guide.
+tags: [Terraform, IaC]
+---
+
+> There should be no reason not to follow at least these :)
+
+Adapted from [terraform-best-practices.com](https://www.terraform-best-practices.com/naming)'s naming guide, with the code examples updated to modern (post-0.12) HCL syntax.
+
+## General conventions
+
+1. Use `_` (underscore) instead of `-` (dash) in all: resource names, data source names, variable names, outputs.
+   - Beware that actual cloud resources have many hidden restrictions in their naming conventions — some can't contain dashes, some must be camel-cased. These conventions refer to Terraform names themselves.
+2. Only use lowercase letters and numbers.
+
+## Resource and data source arguments
+
+1. Do not repeat the resource type in the resource name (not partially, nor completely):
+   - Good: `resource "aws_route_table" "public" {}`
+   - Bad: `resource "aws_route_table" "public_route_table" {}`
+   - Bad: `resource "aws_route_table" "public_aws_route_table" {}`
+2. Name the resource `this` if there's no more descriptive, general name available, or if the module creates a single resource of this type (e.g. there's a single resource of type `aws_nat_gateway` and multiple resources of type `aws_route_table`, so `aws_nat_gateway` should be named `this` and `aws_route_table` should have more descriptive names — like `private`, `public`, `database`).
+3. Always use singular nouns for names.
+4. Use `-` (dash) inside argument values and in places where the value will be exposed to a human (e.g. inside the DNS name of an RDS instance).
+5. Include the `count` argument inside resource blocks as the first argument at the top, and separate it by a newline. See [example](https://www.terraform-best-practices.com/naming#usage-of-count).
+6. Include the `tags` argument, if supported by the resource, as the last real argument, followed by `depends_on` and `lifecycle` if necessary. All of these should be separated by a single empty line. See [example](https://www.terraform-best-practices.com/naming#placement-of-tags).
+7. When using a condition in the `count` argument, use a boolean value if it makes sense, otherwise use `length` or another interpolation. See [example](https://www.terraform-best-practices.com/naming#conditions-in-count).
+8. To make an inverted condition, don't introduce another variable unless really necessary — use `1 - boolean value` instead. For example: `count = 1 - var.create_public_subnets`.
+
+## Code examples of `resource`
+
+### Usage of `count`
+
+Good:
+
+```hcl
+# main.tf
+
+resource "aws_route_table" "public" {
+  count = 2
+
+  vpc_id = "vpc-12345678"
+  # ... remaining arguments omitted
+}
+```
+
+Bad:
+
+```hcl
+# main.tf
+
+resource "aws_route_table" "public" {
+  vpc_id = "vpc-12345678"
+
+  count = 2
+  # ... remaining arguments omitted
+}
+```
+
+### Placement of `tags`
+
+Good:
+
+```hcl
+# main.tf
+
+resource "aws_nat_gateway" "this" {
+  count = 1
+
+  allocation_id = "..."
+  subnet_id     = "..."
+
+  tags = {
+    Name = "..."
+  }
+  depends_on = [aws_internet_gateway.this]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+```
+
+Bad:
+
+```hcl
+# main.tf
+
+resource "aws_nat_gateway" "this" {
+  count = 1
+
+  tags = "..."
+
+  depends_on = [aws_internet_gateway.this]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  allocation_id = "..."
+  subnet_id     = "..."
+}
+```
+
+### Conditions in `count`
+
+```hcl
+# main.tf
+
+count = length(var.public_subnets) > 0 ? 1 : 0
+```
+
+```hcl
+# main.tf
+
+count = var.create_public_subnets
+```
+
+## Variables
+
+1. Don't reinvent the wheel in resource modules — use the same variable names, description, and default as defined in the "Argument Reference" section for the resource you're working on.
+2. Omit the `type = "list"` declaration if there's also a `default = []`.
+3. Omit the `type = "map"` declaration if there's also a `default = {}`.
+4. Use the plural form in the name of variables of type `list` and `map`.
+5. When defining variables, order the keys: `description`, `type`, `default`.
+6. Always include a `description` for all variables, even if you think it's obvious.
+
+## Outputs
+
+The name of an output matters — it should be consistent and understandable outside of its scope (when someone is using a module, it should be obvious what type and attribute of the value is returned).
+
+1. The general recommendation for output names is that they should be descriptive of the value they contain, and less free-form than you'd normally want.
+2. A good structure for output names looks like `{name}_{type}_{attribute}`, where:
+   1. `{name}` is a resource or data source name without the provider prefix. `{name}` for `aws_subnet` is `subnet`, for `aws_vpc` it is `vpc`.
+   2. `{type}` is the type of resource.
+   3. `{attribute}` is the attribute returned by the output.
+3. If the output returns a value with interpolation functions across multiple resources, `{name}` and `{type}` should be as generic as possible (`this` is often the most generic and should be preferred).
+4. If the returned value is a list, it should have a plural name.
+5. Always include a `description` for all outputs, even if you think it's obvious.
+
+### Code examples of `output`
+
+Return at most one ID of a security group:
+
+```hcl
+# outputs.tf
+
+output "this_security_group_id" {
+  description = "The ID of the security group"
+  value       = element(concat(coalescelist(aws_security_group.this[*].id, aws_security_group.this_name_prefix[*].id), [""]), 0)
+}
+```
+
+When there are multiple resources of the same type, `this` should be preferred, and it should be part of the name of the output — `another_security_group_id` should instead be named `web_security_group_id`:
+
+```hcl
+# outputs.tf
+
+output "security_group_id" {
+  description = "The ID of the security group"
+  value       = element(concat(coalescelist(aws_security_group.this[*].id, aws_security_group.web[*].id), [""]), 0)
+}
+
+output "another_security_group_id" {
+  description = "The ID of the web security group"
+  value       = element(concat(aws_security_group.web[*].id, [""]), 0)
+}
+```
+
+### Use a plural name if the returned value is a list
+
+```hcl
+# outputs.tf
+
+output "this_rds_cluster_instance_endpoints" {
+  description = "A list of all cluster instance endpoints"
+  value       = aws_rds_cluster_instance.this[*].endpoint
+}
+```
+
+### Conditions in `output`
+
+There are two resources of type `aws_db_instance`, named `this` and `this_mssql`, where at most one resource can be created at the same time.
+
+```hcl
+# outputs.tf
+
+output "this_db_instance_id" {
+  description = "The RDS instance ID"
+  value       = element(concat(coalescelist(aws_db_instance.this_mssql[*].id, aws_db_instance.this[*].id), [""]), 0)
+}
+```

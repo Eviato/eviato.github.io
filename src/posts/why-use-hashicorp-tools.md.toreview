@@ -1,0 +1,149 @@
+---
+title: "Why should you use HashiCorp tools to manage your infrastructure?"
+date: 2026-08-21
+excerpt: What HashiCorp's tooling covers, why Terraform's infrastructure-as-code model matters, and how to roll out HCP Terraform / Terraform Enterprise in an organization.
+tags: [Terraform, HashiCorp]
+---
+
+Related: [How to structure a Terraform project](/blog/how-to-structure-a-terraform-project).
+
+## HashiCorp, in brief
+
+HashiCorp is a company whose goal is to enable the world's largest companies to deliver applications faster, by helping them transition from manual processes and ITIL practices to self-service automation and DevOps practices.
+
+To that end, they develop tools around four axes:
+
+- **Infrastructure** automation, to automate provisioning, compliance, and management of cloud infrastructure through a common workflow, via `Terraform`.
+- **Networking** automation, to accelerate application delivery by automating the network — including physical devices, virtual appliances, and a distributed service mesh — via `Consul`.
+- **Security** automation, to manage secrets and protect data based on user and workload identity, via `Vault`.
+- **Application** automation, to deploy any application and iterate safely with progressive delivery, failover strategies, and integrated security and networking, via `Nomad`.
+
+## Infrastructure as Code
+
+Infrastructure as code (IaC) means managing your IT infrastructure using configuration files.
+
+### The challenge
+
+Manual provisioning is slow, error-prone, and difficult to scale.
+
+- **Reduced agility** from ticketing queues and manual workflows using point-and-click GUIs and APIs.
+- **Increased cost**, from "cloud waste" or over-provisioning.
+- **Increased risk**, from more chances for human error — best practices are followed on a "best effort" basis, using tribal knowledge.
+
+### The solution
+
+Automate provisioning using Terraform infrastructure as code.
+
+- **Increased agility**, with reduced provisioning time — from weeks to minutes — with an automated workflow.
+- **Systematic cost control**, as users and applications scale.
+- **Reduced risk**, discovering errors before they happen through code review and embedded provisioning guardrails.
+
+## Terraform's advantages
+
+### Infrastructure as Code
+
+Use HashiCorp Configuration Language (HCL), a simple, human-readable configuration language, to define a desired topology of infrastructure resources. Configuration can also be defined in JSON, for programmatic generation and application integration.
+
+### VCS integration
+
+Write, version, review, and collaborate on Terraform code using your preferred version control system.
+
+Integrate with HCP Terraform and Terraform Enterprise to automatically validate configuration changes and trigger Terraform runs. Link changes made with Terraform to the associated changes in version control.
+
+### Workspaces
+
+Workspaces decompose monolithic infrastructure into smaller components, or "micro-infrastructures." These workspaces can be aligned with teams for role-based access control.
+
+View all workspaces across cloud providers, teams, and environments through one pane of glass. Secure and audit all workspace changes.
+
+### Variables
+
+Granular variables allow for easy reuse of code and enable dynamic changes to scale resources and deploy new versions.
+
+All variables are encrypted, protected by access controls, and retrieved as needed during the provisioning process.
+
+### Runs
+
+Terraform uses two-phased provisioning: a plan (dry run) and an apply (execution). Plans can be inspected prior to execution to ensure expected behavior and safety.
+
+Terraform runs can be applied from the GUI, using the API, or from the CLI, to preserve the same workflow used with the open-source tool. A policy check step is applied to a plan.
+
+### Infrastructure state
+
+The state file is a record of currently provisioned resources. State files enable a versioned history of the infrastructure and are encrypted at rest. Versions can be inspected to see incremental changes.
+
+Remote state storage and management enable teams to share state, prevent more than one change at a time, and view a versioned history of all infrastructure changes made by a team.
+
+### Policy as Code
+
+Sentinel is a policy-as-code framework used to automate multi-cloud governance.
+
+It lets you require every provisioning run to enforce security, compliance, and operational best practices — avoiding the manual code review that slows things down and is error-prone.
+
+## Terraform editions
+
+Terraform is available in three editions.
+
+### Open Source
+
+Terraform open source is distributed as a single binary, available via a CLI.
+
+All Terraform OSS operations are performed locally, and state files are stored locally.
+
+### HCP Terraform (formerly Terraform Cloud)
+
+HCP Terraform is the fastest way to adopt Terraform, one of the most widely used infrastructure-as-code tools across multi-cloud environments. Offered as a service, HCP Terraform provides everything practitioners, teams, and global businesses need to create and collaborate on infrastructure, and to manage risks around security, compliance, and operational constraints.
+
+**Why HCP Terraform?**
+
+- **Reduced operational overhead** — eliminates the time spent by internal IT deploying, managing, and maintaining Terraform.
+- **Built-in security and reliability** — a platform trusted by a large user base, with built-in reliability and data security.
+- **Increased developer velocity** — gets developers using Terraform with integrations into popular developer workflows.
+
+### Self-hosted (Terraform Enterprise)
+
+Terraform Enterprise provides a self-hosted, managed option for organizations with special requirements around data localization and privacy, operational policies around data retention, or a need for single-tenancy. Terraform Enterprise provides everything businesses need to create and collaborate on infrastructure, and to manage risks around security, compliance, and operational constraints.
+
+**Why Terraform Enterprise?**
+
+- **Data localization policies** — some countries and industries have specific laws about how data is obtained, stored, used, and managed, whether from national privacy law or industry-specific policy.
+- **Strict operational policies** — organization-defined policies that dictate how IT needs to operate, often around data retention or disaster recovery, requiring adherence from internal IT/security teams.
+- **Single-tenancy requirements** — some use cases require a single-tenant solution, often in industries where security and regulatory compliance are key factors in the data architecture.
+
+## A note on licensing, and OpenTofu
+
+In August 2023, HashiCorp changed Terraform's license from the open-source MPL 2.0 to the Business Source License (BSL) — a source-available license with restrictions on competing commercial use. In response, a group of contributors and companies forked the last MPL-licensed release and founded **OpenTofu**, now governed by the Linux Foundation as a drop-in-compatible, genuinely open-source alternative.
+
+For most day-to-day usage, the two stay close enough that everything else in this post applies to either. Where it matters: OpenTofu is the better fit if open-source licensing is a hard requirement for your organization — procurement, compliance, or just a preference for community governance. Terraform, and the HCP Terraform / Terraform Enterprise platforms described below, remain the safer default if you're already invested in HashiCorp's ecosystem or need a capability OpenTofu hasn't caught up on. Worth checking the current state of both before committing either way — this space has moved fast since the split, and I'd rather point you to go check than assert something here that's gone stale by the time you read it.
+
+## How to roll it out
+
+Rolling Terraform out into an existing company typically means a migration path:
+
+- Migrate the Terraform open-source project into HCP Terraform.
+- Set up a unit to manage HCP Terraform (organizations, workspaces, VCS, and so on).
+- Start using HCP Terraform.
+- Once the tool is mastered, install Terraform Enterprise inside the company's infrastructure.
+- Migrate from HCP Terraform to Terraform Enterprise.
+
+*Why go through HCP Terraform before Terraform Enterprise?*
+
+Since it's the introduction of a new tool, it's better to go step by step, to put the best practices and ways of working properly in place across the company.
+
+It's also faster to start with HCP Terraform than with Terraform Enterprise, since the self-hosted option requires more time to set up.
+
+## Frequently asked questions
+
+**What's the difference between HCP Terraform and the CLI?**
+
+HCP Terraform is a free-to-use, self-service SaaS platform that extends the capabilities of the open-source Terraform CLI. It adds automation and collaboration features, and performs Terraform operations remotely, making it well suited to collaborative and production environments. The Terraform CLI performs all runs and stores state locally, unless used with an HCP Terraform or Terraform Enterprise account.
+
+**What's the difference between HCP Terraform and Terraform Enterprise?**
+
+Terraform Enterprise is offered as a private installation, designed for organizations with specific requirements around security, compliance, and custom operations. HCP Terraform is offered as a multi-tenant SaaS platform, designed for smaller teams and organizations — its smaller plans default to one run at a time, which prevents users from running multiple runs concurrently.
+
+## Useful links
+
+- [Documentation — Terraform by HashiCorp](https://www.terraform.io/docs/index.html)
+- [Terraform Registry](https://registry.terraform.io/)
+- [Introduction to Infrastructure as Code with Terraform](https://learn.hashicorp.com/tutorials/terraform/infrastructure-as-code)

@@ -1,0 +1,185 @@
+---
+title: What I learned preparing for the Terraform Associate certification
+date: 2026-09-04
+excerpt: A narrative walk through the Terraform Associate curriculum — the core workflow, state, modules, and what HCP Terraform adds on top — from the notes I took while studying for it.
+tags: [Terraform, IaC]
+---
+
+Related: [How to structure a Terraform project](/blog/how-to-structure-a-terraform-project).
+
+I took the notes behind this post while preparing for the Terraform Associate certification. Rather than publish them as a raw outline, here's the material organized the way I'd actually explain it to someone getting started.
+
+> HashiCorp has iterated on this certification's name and objectives over time, and that's only accelerated since the IBM acquisition — check the current curriculum on HashiCorp's own site before treating anything below as the exact current exam scope. The underlying Terraform concepts hold up regardless.
+
+## Why infrastructure as code, and why Terraform
+
+Infrastructure as code (IaC) means defining your infrastructure in configuration files instead of clicking through a console. Once it's code, it inherits everything that makes code manageable: lifecycle management, reliability, and repeatability.
+
+Terraform's pitch on top of that is being cloud-agnostic. It's tempting to spread infrastructure across multiple clouds for fault tolerance — a single region or provider caps how gracefully you recover from an outage — but multi-cloud is hard precisely because most infrastructure tools are cloud-specific. Terraform uses a single configuration language across providers, and can even express cross-cloud dependencies, which is what makes multi-cloud orchestration realistic instead of theoretical.
+
+The other piece that makes Terraform different from just running scripts is **state**. State is essentially a database linking your configuration files to the real-world resources they describe — it's what lets Terraform know what it's already created, compute a diff instead of blindly re-running everything, and keep that mapping in sync.
+
+## The core workflow: write, plan, apply
+
+Terraform's workflow is deliberately small:
+
+1. **Write** — author infrastructure as code.
+2. **Plan** — preview changes before applying.
+3. **Apply** — provision reproducible infrastructure.
+
+`terraform init` prepares a working directory: it fetches the provider plugins and modules the configuration needs, sets up the backend, and writes a `.terraform.lock.hcl` file recording the exact provider versions selected. A few flags are worth knowing — `-upgrade` to opt into upgrading modules and plugins, `-backend=false` to skip backend setup, `-get=false` to skip re-installing child modules you've already initialized — but most of the time you just run it plain.
+
+`terraform validate` checks the configuration files in a directory without touching any remote service — no state, no provider API calls, just syntax and internal consistency.
+
+`terraform plan` is where Terraform actually talks to your providers: it refreshes what it knows (unless you disable that) and computes what needs to change to reach the state described in your configuration. `-out=path` saves that plan so a later `terraform apply` is guaranteed to apply exactly what you reviewed, and `-target=resource` lets you scope a plan to a specific resource when you need to. The full flag list is worth a look once (`terraform plan -help`), but `-out` and `-target` cover most of what you'll reach for day to day.
+
+`terraform apply` executes either the changes it computes itself, or a saved plan file if you give it one. `-auto-approve` skips the interactive confirmation — useful in CI, dangerous as a habit locally.
+
+`terraform destroy` tears down everything Terraform manages. `terraform plan -destroy` lets you preview that before committing to it, which is worth doing more often than it's tempting to skip.
+
+### Providers, and the plugin architecture behind them
+
+A provider is a plugin that translates your configuration into API calls against a specific service — AWS, Kubernetes, Datadog, whatever. `terraform init` is what fetches and installs the right provider version, based on the `required_providers` block inside your top-level `terraform {}` block:
+
+```hcl
+terraform {
+  required_providers {
+    aws = {
+      version = ">= 2.7.0"
+      source  = "hashicorp/aws"
+    }
+  }
+}
+```
+
+You'll sometimes see a `version` argument set directly inside a `provider` block instead — that's deprecated as of Terraform 0.13. Version constraints belong in `required_providers`; the provider block's own `version` argument only mattered back when Terraform could only install HashiCorp-distributed providers, and is slated for removal.
+
+Nothing stops you from using several providers in the same configuration — a common pattern is fetching a value from one provider's resource (say, an instance ID from `aws`) and passing it into a resource managed by another (say, `datadog`).
+
+### Provisioners: the escape hatch, not the default
+
+Terraform's own recommendation is to avoid provisioners and find another way whenever one exists. If you need a machine provisioned with a specific running configuration, reach for `Packer` or `cloud-init` first.
+
+The one legitimate case for `local-exec` is when you need to drive a CLI for a system that has no proper Terraform provider support yet — at that point it's a reasonable temporary workaround, ideally paired with an issue opened against that provider so first-class support eventually replaces it. `local-exec` runs on the machine executing Terraform; `remote-exec` runs on the resource itself, after it's created.
+
+## Useful commands outside the core workflow
+
+A handful of commands round out day-to-day Terraform use without being part of the write/plan/apply loop itself:
+
+- **`terraform fmt`** rewrites your configuration files into Terraform's canonical style. Add `-recursive` to apply it beyond the current directory.
+- **`terraform taint`** marks a resource as tainted without touching real infrastructure — it just edits the state so the next plan shows that resource being destroyed and recreated, and the next apply carries that out.
+- **`terraform import`** brings an existing, unmanaged resource under Terraform's management, once you've written the matching configuration for it. Since Terraform 1.5, there's also an `import {}` **block** you write directly in configuration — it does the same job, but shows up in `terraform plan` for review before anything touches the state, instead of running blind against real state like the CLI command does. Reach for the block form first; keep the CLI command in mind for one-off, scripted imports.
+- **`terraform workspace`** lets you reuse one configuration across multiple environments, each with its own separate state file. Locally, those live under `terraform.tfstate.d`; with a remote backend, the same idea applies without the local directory.
+- **`terraform state`** is the supported way to inspect or modify the state file, instead of hand-editing it — `terraform state mv` in particular is what you reach for when you rename a resource or move it between modules. Since Terraform 1.1, a `moved {}` block in configuration can express that same refactor declaratively, showing up as a plan instead of an imperative state command — worth preferring when the refactor lives in a PR someone else needs to review.
+- Setting the **`TF_LOG`** environment variable to `TRACE`, `DEBUG`, `INFO`, `WARN`, or `ERROR` controls log verbosity — `TRACE` is both the most verbose and the default if you set `TF_LOG` to anything that isn't a recognized level.
+
+## Working with modules
+
+By default, only verified modules show up in the HashiCorp Registry. You reference one with `namespace/name/provider`; a custom, non-registry module uses `hostname/namespace/name/provider` instead. Module versions come from VCS tags on the module's repository, and both inputs and outputs are documented in the module's README rather than discoverable any other way.
+
+Inside a module, a variable can carry a few different properties: `default` (making it optional), `type`, `description`, `validation` (rules beyond a plain type constraint), and `sensitive` (which limits how its value shows up in Terraform's UI output). To read a value back out of a module you've called, reference its declared output:
+
+```hcl
+output "instantiation" {
+  description = "output from my instantiation of the module `foo`"
+  value       = module.foo.some_output_name
+}
+```
+
+If you've read [how I structure a Terraform project](/blog/how-to-structure-a-terraform-project), this is the same `base` / `functional` / `blueprint` layering — modules are what makes that layering possible in the first place.
+
+## State: where it lives, and what it means for your team
+
+By default, Terraform uses a **local** backend: the `terraform.tfstate` file sits in your working directory, and every operation runs from your machine. A **remote** backend instead stores state wherever you've configured — HCP Terraform, Terraform Enterprise, or a remote object store — and, if you're using HCP Terraform or Enterprise, runs operations there too rather than locally.
+
+Backends are configured with a nested `backend` block inside the top-level `terraform` block:
+
+```hcl
+terraform {
+  backend "remote" {
+    organization = "example_corp"
+
+    workspaces {
+      name = "my-app-prod"
+    }
+  }
+}
+```
+
+Two constraints worth remembering: a configuration can only declare one backend block, and that block can't reference named values like variables, locals, or data source attributes — it has to be static. If you change the backend configuration, re-run `terraform init` (optionally with `-backend-config` for a partial configuration).
+
+Every time Terraform writes to the state, it locks it first, to stop two runs from colliding. If a lock can't be acquired, someone else is almost certainly mid-operation — wait, rather than reaching for `-force`. If a lock genuinely gets stuck, `terraform force-unlock LOCK_ID` clears it manually.
+
+`terraform refresh` reconciles what's in the state file with what's actually deployed, which is how Terraform surfaces drift between the two.
+
+The one thing worth internalizing about state: it's written in plain text, including anything you've marked `sensitive` in a variable. Treat the state file itself as sensitive data — encryption at rest and tight access control on wherever it's stored aren't optional.
+
+## Reading and writing configuration
+
+The `resource` vs `data` distinction is simple once it clicks: `resource` is something Terraform creates and owns; `data` reads something that already exists, without managing it.
+
+Variables and outputs are the two halves of a module's interface:
+
+```hcl
+# variables.tf
+variable "name" {
+  type        = string
+  description = "Name of the aws instance foo"
+  default     = "foo"
+}
+
+# main.tf
+resource "aws_instance" "this" {
+  tags = {
+    Name = var.name
+  }
+}
+
+# outputs.tf
+output "instance_id" {
+  description = "ID of the EC2 instance"
+  value       = aws_instance.this.id
+}
+```
+
+After `terraform apply`, outputs show up in the result, and `terraform output` (or `terraform output instance_id` for one specifically) lets you read them back later.
+
+For secrets, HashiCorp's own recommendation is to keep them out of Terraform variables entirely and store them in Vault instead, querying Vault from your configuration via its provider. That said, it doesn't change the fact above — whatever value ends up in a resource still ends up in the state file too.
+
+Terraform's type system covers the usual collection types — `list(string)`, `map(string)`, `set(string)`, `object({ name = string, age = number })`, `tuple([string, number, bool])` — and resources reference each other through addressing like `resource_type.resource_name`, optionally indexed (`["key"]` or `[index]`) when the resource or module uses `for_each` or `count`.
+
+`dynamic` blocks are the mechanism for repeating a nested block a variable number of times — for example, generating one `setting` block per entry in a list:
+
+```hcl
+variable "settings" {
+  type = list(map(string))
+  default = [
+    { name = "toto", value = "test" },
+    { name = "tata", value = "bar" },
+  ]
+}
+
+resource "..." "this" {
+  name = "foo"
+
+  dynamic "setting" {
+    for_each = var.settings
+    content {
+      name  = setting.value["name"]
+      value = setting.value["value"]
+    }
+  }
+}
+```
+
+Terraform tracks two kinds of dependency between resources. An **explicit** dependency is one you declare yourself with `depends_on`. An **implicit** one is created automatically the moment you reference one resource's attribute from inside another — which is the far more common case, and usually the one to prefer, since it lets Terraform infer the dependency graph instead of you maintaining it by hand.
+
+## What HCP Terraform and Terraform Enterprise add
+
+Everything above applies whether you're running the open-source CLI, HCP Terraform (HashiCorp's SaaS platform, formerly branded Terraform Cloud), or Terraform Enterprise (the self-hosted equivalent). What changes is how runs and state are managed, and a few capabilities that only exist at that layer:
+
+- **Sentinel** is HashiCorp's embedded policy-as-code framework. Policies are written in Sentinel's own policy language, checked after `terraform plan` but before `apply` can run, and can be mocked against real plan/state/configuration data to test them before they're enforced.
+- The **private module registry** works like the public Terraform Registry, but scoped to your organization — versioning, search, and a configuration designer included.
+- **Workspaces**, in this context, aren't quite the same thing as CLI workspaces. Locally, a workspace is effectively an alternate state file inside the same working directory. In HCP Terraform or Enterprise, a workspace is a full stand-in for a working directory — configuration, state, and variables — which is what makes it possible to manage many independent collections of infrastructure without juggling local folders.
+
+Day to day, HCP Terraform/Enterprise gives you a web UI, automatic runs triggered by a push to a linked repository (or manual ones when you want more control), a confirm/discard step before a plan is applied, optional auto-apply (worth using carefully), and visibility into who ran what and when — which is the part that tends to matter most once more than one person touches the same infrastructure.

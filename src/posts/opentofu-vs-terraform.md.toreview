@@ -1,0 +1,38 @@
+---
+title: "OpenTofu: the open-source fork of Terraform, and when to consider it"
+date: 2026-09-09
+excerpt: Why OpenTofu exists, how compatible it actually is with Terraform day to day, and a practical way to decide between the two.
+tags: [OpenTofu, Terraform]
+---
+
+I touched on this briefly in [why you should use HashiCorp tools](/blog/why-use-hashicorp-tools) — it deserves its own post, since "which one do I actually run" is a real decision now, not a footnote.
+
+## Why OpenTofu exists
+
+In August 2023, HashiCorp relicensed Terraform (along with Vault, Consul, and its other core products) from the Mozilla Public License 2.0 to the Business Source License 1.1. Day-to-day usage didn't change — you can still use Terraform for free, including commercially, to manage your own infrastructure. What the BSL restricts is building a *competing commercial product* on top of it, which is squarely aimed at companies selling Terraform-as-a-service.
+
+That was enough for a group of vendors and contributors — Gruntwork, Spacelift, Harness, env0, Scalr, and others — to fork the last MPL-licensed release (1.5.x) and found **OpenTofu**, now governed under the Linux Foundation rather than any single company.
+
+## How compatible is it, really
+
+Close to a drop-in replacement, by design:
+
+- Same HCL syntax, same core language semantics.
+- Same provider protocol — providers from the Terraform Registry generally work unmodified, since most providers have no way of knowing (or caring) whether `terraform` or `tofu` is talking to them.
+- Compatible state file format — pointing `tofu` at a state file `terraform` produced, and vice versa, works for the common case.
+- A near 1:1 CLI — `tofu init`, `tofu plan`, `tofu apply` mirror their Terraform equivalents closely enough that migrating a CI pipeline is often just swapping the binary name.
+
+Where it's genuinely diverged: OpenTofu shipped **native state encryption** — encrypting the state file at rest using a key you control, independent of wherever it's stored — well before Terraform had an equivalent built into the OSS CLI. That's the feature I'd point to if someone asks "what does OpenTofu actually do differently," rather than "it's just a rebadged Terraform."
+
+I'd treat anything more specific than that as something to verify against OpenTofu's current release notes rather than take from this post — the two projects have kept shipping since the fork, and I'd rather send you to check than risk stating something here that's since changed.
+
+## Deciding between them
+
+A few questions that actually move the needle:
+
+- **Does your organization have a hard requirement around OSS licensing** — procurement policy, a client contract, just a preference for community governance over a single vendor's roadmap? That points at OpenTofu.
+- **Are you already invested in HCP Terraform or Terraform Enterprise** — Sentinel policies, private module registry, the workflows [I covered in my certification notes](/blog/terraform-certification-preparation)? That's a real switching cost, and points at staying on Terraform.
+- **Do you need a specific capability** that only exists on one side today? Check current docs for both rather than assume — this is exactly the kind of thing that's stopped being true within a year of me writing it.
+- **Are you running your own infrastructure-as-code platform commercially?** That's the actual scenario the BSL change targets — if that's not you, the license change alone isn't a strong reason to move either way.
+
+For most engagements I've been on, the honest answer is: either works, the provider ecosystem is the same either way, and the decision comes down to organizational preference more than technical capability. If you're starting fresh with no existing Terraform investment, it's worth spinning up a throwaway `tofu init` on a real module and seeing if anything breaks — for most configurations, nothing will.

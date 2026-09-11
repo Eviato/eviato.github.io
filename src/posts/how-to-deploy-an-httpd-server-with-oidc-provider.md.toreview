@@ -1,0 +1,813 @@
+---
+title: How to deploy an HTTPD server with an OIDC provider
+date: 2026-08-28
+excerpt: A local stack — mkcert, Ory Hydra, and Apache's mod_auth_openidc — to run and test an HTTPS webserver protected by OpenID Connect, entirely on your machine.
+tags: [OpenShift, Kubernetes]
+---
+
+## Introduction
+
+> This post demonstrates how to run and deploy a local webserver using valid certificates and an OIDC provider.
+
+## Tooling
+
+The technologies used in this project:
+
+- [Docker: Accelerated Container Application Development](https://www.docker.com/)
+- [GitHub - FiloSottile/mkcert: A simple zero-config tool to make locally trusted development certificates with any names you'd like](https://github.com/FiloSottile/mkcert)
+- [Ory Hydra - Open Source OAuth 2.0 and OpenID Connect Server](https://www.ory.sh/hydra/)
+
+## Certificate management
+
+To generate certificates locally, `mkcert` is a good solution — it generates a root CA and new certificates following the given instructions.
+
+To prepare the stack:
+
+```bash
+mkdir mkcert mkcert/app mkcert/root
+touch mkcert.Dockerfile
+touch compose-mkcert.yaml
+```
+
+### `mkcert.Dockerfile`
+
+Let's create a sample Docker container to work with `mkcert`.
+
+```dockerfile
+FROM alpine:3.15.4 AS build
+
+WORKDIR /mkcert
+
+RUN apk --no-cache add curl
+RUN curl -JLO "https://dl.filippo.io/mkcert/latest?for=linux/amd64" && \
+  chmod +x mkcert-v1.4.4-linux-amd64
+
+FROM alpine:3.15.4
+
+COPY --from=build /mkcert/mkcert-v1.4.4-linux-amd64 /usr/local/bin/mkcert
+WORKDIR /mkcert
+CMD ["/usr/local/bin/mkcert"]
+```
+
+### `compose-mkcert.yaml`
+
+**Container explanation**
+
+- `mkcert-install` — creates the root CA.
+- `mkcert-generate` — generates a certificate for the given DNS names.
+- `certificate-permission` — manages certificate permissions and format for use.
+  - *We're in dev mode, so we don't care about exact permissions.*
+
+```yaml
+services:
+  mkcert-install:
+    container_name: mkcert_install
+    build:
+      dockerfile: mkcert.Dockerfile
+    command: mkcert -install
+    volumes:
+      - type: bind
+        source: ${PWD}/mkcert/app
+        target: /mkcert
+      - type: bind
+        source: ${PWD}/mkcert/root
+        target: /root/.local/share/mkcert
+
+  mkcert-generate:
+    container_name: mkcert_generate
+    build:
+      dockerfile: mkcert.Dockerfile
+    command: mkcert -key-file server.key -cert-file server.crt hydra_server example.com "*.example.com" example.test localhost 127.0.0.1 ::1
+    volumes:
+      - type: bind
+        source: ${PWD}/mkcert/app
+        target: /mkcert
+      - type: bind
+        source: ${PWD}/mkcert/root
+        target: /root/.local/share/mkcert
+    depends_on:
+      mkcert-install:
+        condition: service_completed_successfully
+
+  certificate-permission:
+    container_name: mkcert_permission
+    image: alpine:latest
+    command:
+      - /bin/sh
+      - -c
+      - |
+        chmod 777 /mkcert/server.key
+        chmod 777 /mkcert/server.crt
+        cp /root/rootCA.pem /root/rootCA.crt
+    volumes:
+      - type: bind
+        source: ${PWD}/mkcert/app
+        target: /mkcert
+      - type: bind
+        source: ${PWD}/mkcert/root
+        target: /root/
+    depends_on:
+      mkcert-generate:
+        condition: service_completed_successfully
+```
+
+### Testing
+
+```bash
+docker compose -f compose-mkcert.yaml up
+```
+
+The result should look like:
+
+```text
+[+] Running 3/0
+ ✔ Container mkcert_install     Created                                     0.0s
+ ✔ Container mkcert_generate    Created                                     0.0s
+ ✔ Container mkcert_permission  Created                                     0.0s
+Attaching to mkcert_generate, mkcert_install, mkcert_permission
+mkcert_install     | Installing to the system store is not yet supported on this Linux 😣 but Firefox and/or Chrome/Chromium will still work.
+mkcert_install     | You can also manually install the root certificate at "/root/.local/share/mkcert/rootCA.pem".
+mkcert_install     |
+mkcert_install exited with code 0
+mkcert_generate    | Note: the local CA is not installed in the system trust store.
+mkcert_generate    | Run "mkcert -install" for certificates to be trusted automatically ⚠️
+mkcert_generate    |
+mkcert_generate    | Created a new certificate valid for the following names 📜
+mkcert_generate    |  - "hydra_server"
+mkcert_generate    |  - "example.com"
+mkcert_generate    |  - "*.example.com"
+mkcert_generate    |  - "example.test"
+mkcert_generate    |  - "localhost"
+mkcert_generate    |  - "127.0.0.1"
+mkcert_generate    |  - "::1"
+mkcert_generate    |
+mkcert_generate    | Reminder: X.509 wildcards only go one level deep, so this won't match a.b.example.com ℹ️
+mkcert_generate    |
+mkcert_generate    | The certificate is at "server.crt" and the key at "server.key" ✅
+mkcert_generate    |
+mkcert_generate    | It will expire on 26 October 2026 🗓
+mkcert_generate    |
+mkcert_generate exited with code 0
+mkcert_permission exited with code 0
+```
+
+Now verify the files are present:
+
+```text
+❯ ll mkcert/root && ll mkcert/app
+total 24
+-rw-------@ 1 maximebrunet  staff   2,4K 26 jul 17:09 rootCA-key.pem
+-rw-r--r--  1 maximebrunet  staff   1,6K 26 jul 18:30 rootCA.crt
+-rw-r--r--  1 maximebrunet  staff   1,6K 26 jul 17:09 rootCA.pem
+total 16
+-rwxrwxrwx@ 1 maximebrunet  staff   1,5K 26 jul 18:30 server.crt
+-rwxrwxrwx@ 1 maximebrunet  staff   1,7K 26 jul 18:30 server.key
+```
+
+## OpenID provider stack
+
+To run an OIDC provider locally, I chose to deploy Hydra.
+
+**Container explanation**
+
+- `postgres` — database used by the Hydra stack.
+- `hydra-db-init` — runs the Postgres migration to initialize the database.
+- `hydra-server` — the OpenID provider server.
+- `hydra-consent` — web interface to ask for the user's consent to use their data.
+- `hydra-client-init` — task that creates an application in the OpenID provider.
+
+> This step requires the `mkcert` step to be completed first.
+
+### `compose.yaml`
+
+> `postgres:9.6` and the `oryd/hydra:v1.10.6` images below are what this stack was originally built and tested against — 9.6 in particular has been end-of-life since November 2021, with no security patches since. Fine for a disposable local sandbox; swap in current, supported image versions before running any of this anywhere it'll stay up.
+
+```yaml
+...
+  postgres:
+    image: postgres:9.6
+    container_name: postgres
+    environment:
+      POSTGRES_USER: "hydra"
+      POSTGRES_PASSWORD: "secret"
+      POSTGRES_DB: "hydra"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} --dbname $${POSTGRES_DB}"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+      timeout: 10s
+
+  hydra-db-init:
+    image: oryd/hydra:v1.10.6
+    container_name: hydra_db_init
+    command: migrate sql --yes "postgres://hydra:secret@postgres:5432/hydra?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+
+  hydra-server:
+    image: oryd/hydra:v1.10.6
+    container_name: hydra_server
+    environment:
+      DSN: "postgres://hydra:secret@postgres:5432/hydra?sslmode=disable"
+      #URLS_SELF_ISSUER: https://localhost:5444/
+      URLS_SELF_ISSUER: https://hydra_server:4444/
+      URLS_CONSENT: http://localhost:9020/consent
+      URLS_LOGIN: http://localhost:9020/login
+    volumes:
+      - ${PWD}/mkcert/app/server.crt:/mkcert/server.crt
+      - ${PWD}/mkcert/app/server.key:/mkcert/server.key
+      - ${PWD}/hydra/config.yaml:/config/config.yaml
+    ports:
+      - "4444:4444"
+      - "5445:4445"
+    command: serve all --config /config/config.yaml
+    depends_on:
+      hydra-db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # There's no shell to curl /health/alive with, so use a simple command to list clients instead. Assume the server is running if we get an answer.
+      test: ["CMD", "hydra", "clients", "list", "--endpoint", "https://localhost:4445", "--skip-tls-verify"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  hydra-consent:
+    image: oryd/hydra-login-consent-node:v1.10.6
+    container_name: hydra_consent
+    environment:
+      HYDRA_ADMIN_URL: https://hydra_server:4445
+      # Disables TLS certificate verification for this container's outbound
+      # requests. Fine here since we're talking to our own mkcert-issued cert
+      # that isn't in the system trust store — never set this in production.
+      NODE_TLS_REJECT_UNAUTHORIZED: 0
+    ports:
+      - "9020:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      hydra-server:
+        condition: service_healthy
+
+  hydra-client-init:
+    image: oryd/hydra:v1.10.6
+    container_name: hydra_client_init
+    environment:
+      HYDRA_ADMIN_URL: https://hydra_server:4445
+    command: clients create --skip-tls-verify --id my-super-app-id --secret my-super-password --grant-types authorization_code,refresh_token,client_credentials,implicit --response-types token,code,id_token --scope openid,profile --callbacks https://localhost:8082/callback --token-endpoint-auth-method none
+    depends_on:
+      # Need the server to be started to create clients.
+      hydra-server:
+        condition: service_healthy
+...
+```
+
+### Testing
+
+To test that the OpenID stack is up and running:
+
+```bash
+docker compose up -d
+```
+
+> Make sure the network name matches yours.
+
+```bash
+docker run --rm -it \
+  --network hydra \
+  -p 9010:9010 \
+  oryd/hydra:v1.10.6 \
+  token user --skip-tls-verify \
+    --port 9010 \
+    --auth-url https://localhost:5444/oauth2/auth \
+    --token-url https://hydra_server:4444/oauth2/token \
+    --client-id my-super-app-id \
+    --client-secret my-super-password \
+    --scope openid,profile
+```
+
+## HTTPD
+
+### `httpd.Dockerfile`
+
+It's now necessary to create a dedicated httpd Docker image to install a few dependencies.
+
+> This step requires the `mkcert` step to be completed first.
+
+```dockerfile
+FROM httpd:2.4.62
+
+# Install OIDC apache module.
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    ca-certificates libapache2-mod-auth-openidc
+
+RUN cp /usr/lib/apache2/modules/mod_auth_openidc.so /usr/local/apache2/modules/mod_auth_openidc.so
+
+# Install rootCA on container.
+WORKDIR /usr/local/share/ca-certificates
+COPY mkcert/root/rootCA.crt ./
+RUN update-ca-certificates
+
+# Get back to normal workdir
+WORKDIR /usr/local/apache2
+```
+
+### Apache configuration
+
+> The following files can be copy/pasted into a folder named `apache`.
+
+```bash
+mkdir apache/
+```
+
+#### `httpd.conf`
+
+```apache
+ServerRoot "/usr/local/apache2"
+Listen 80
+
+LoadModule mpm_event_module modules/mod_mpm_event.so
+LoadModule authn_file_module modules/mod_authn_file.so
+LoadModule authz_host_module modules/mod_authz_host.so
+LoadModule authz_groupfile_module modules/mod_authz_groupfile.so
+LoadModule authz_core_module modules/mod_authz_core.so
+LoadModule access_compat_module modules/mod_access_compat.so
+LoadModule auth_basic_module modules/mod_auth_basic.so
+LoadModule socache_shmcb_module modules/mod_socache_shmcb.so
+LoadModule reqtimeout_module modules/mod_reqtimeout.so
+LoadModule filter_module modules/mod_filter.so
+LoadModule mime_module modules/mod_mime.so
+LoadModule log_config_module modules/mod_log_config.so
+LoadModule env_module modules/mod_env.so
+LoadModule headers_module modules/mod_headers.so
+LoadModule setenvif_module modules/mod_setenvif.so
+LoadModule version_module modules/mod_version.so
+LoadModule ssl_module modules/mod_ssl.so
+LoadModule unixd_module modules/mod_unixd.so
+LoadModule status_module modules/mod_status.so
+LoadModule autoindex_module modules/mod_autoindex.so
+LoadModule dir_module modules/mod_dir.so
+LoadModule alias_module modules/mod_alias.so
+LoadModule rewrite_module modules/mod_rewrite.so
+
+# Load modules for SSO
+LoadModule auth_openidc_module modules/mod_auth_openidc.so
+LoadModule authn_core_module modules/mod_authn_core.so
+LoadModule authz_user_module modules/mod_authz_user.so
+LoadModule setenvif_module modules/mod_setenvif.so
+
+<IfModule unixd_module>
+    #
+    # If you wish httpd to run as a different user or group, you must run
+    # httpd as root initially and it will switch.
+    #
+    # User/Group: The name (or #number) of the user/group to run httpd as.
+    # It is usually good practice to create a dedicated user and group for
+    # running httpd, as with most system services.
+    #
+    User www-data
+    Group www-data
+</IfModule>
+
+ServerAdmin you@example.com
+
+<Directory />
+    AllowOverride none
+    Require all denied
+</Directory>
+
+DocumentRoot "/usr/local/apache2/htdocs"
+<Directory "/usr/local/apache2/htdocs">
+   Options Indexes FollowSymLinks
+   AllowOverride None
+   Require all granted
+</Directory>
+
+<IfModule dir_module>
+    DirectoryIndex index.html
+</IfModule>
+
+<Files ".ht*">
+    Require all denied
+</Files>
+
+ErrorLog /proc/self/fd/2
+LogLevel warn
+
+<IfModule log_config_module>
+    LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" combined
+    LogFormat "%h %l %u %t \"%r\" %>s %b" common
+
+    CustomLog /proc/self/fd/1 common
+</IfModule>
+
+# Secure (SSL/TLS) connections
+Include conf/extra/httpd-ssl.conf
+
+<IfModule ssl_module>
+    SSLRandomSeed startup builtin
+    SSLRandomSeed connect builtin
+</IfModule>
+```
+
+#### `ssl.conf`
+
+```apache
+Listen 443
+
+SSLCipherSuite HIGH:MEDIUM:!MD5:!RC4:!3DES
+SSLProxyCipherSuite HIGH:MEDIUM:!MD5:!RC4:!3DES
+
+SSLHonorCipherOrder on
+
+SSLProtocol all -SSLv3
+SSLProxyProtocol all -SSLv3
+
+SSLPassPhraseDialog  builtin
+SSLSessionCache        "shmcb:/usr/local/apache2/logs/ssl_scache(512000)"
+SSLSessionCacheTimeout  300
+
+<VirtualHost _default_:443>
+
+    DocumentRoot "/usr/local/apache2/htdocs"
+    ServerName www.example.com:443
+    ServerAdmin you@example.com
+    ErrorLog /proc/self/fd/2
+    TransferLog /proc/self/fd/1
+
+    SSLEngine on
+    SSLCertificateFile "/usr/local/apache2/certificates/server.crt"
+    SSLCertificateKeyFile "/usr/local/apache2/certificates/server.key"
+
+    <FilesMatch "\.(cgi|shtml|phtml|php)$">
+        SSLOptions +StdEnvVars
+    </FilesMatch>
+
+    <Directory "/usr/local/apache2/cgi-bin">
+        SSLOptions +StdEnvVars
+    </Directory>
+
+    <Directory /usr/local/apache2/htdocs>
+        RewriteEngine On
+        RewriteRule ^([^\.]+)$ $1.html [L]
+    </Directory>
+
+    BrowserMatch "MSIE [2-5]" nokeepalive ssl-unclean-shutdown downgrade-1.0 force-response-1.0
+    CustomLog /proc/self/fd/1 "%t %h %{SSL_PROTOCOL}x %{SSL_CIPHER}x \"%r\" %b"
+
+    # OIDC global configuration
+    OIDCRedirectURI /callback
+    OIDCScope "openid profile"
+    OIDCProviderTokenEndpointAuth client_secret_jwt
+    OIDCPKCEMethod S256
+    OIDCCryptoPassphrase "exec:/usr/bin/openssl rand -base64 20"
+    # Skips TLS certificate validation on the Apache -> Hydra backend channel —
+    # same reasoning as NODE_TLS_REJECT_UNAUTHORIZED above (our mkcert root CA
+    # isn't in the container's trust store). Leave this On outside local dev.
+    OIDCSSLValidateServer Off
+
+    # OIDC Hydra configuration
+    OIDCProviderMetadataURL https://hydra_server:4444/.well-known/openid-configuration
+    OIDCClientID my-super-app-id
+
+    <Location / >
+      Require all granted
+    </Location>
+
+    <LocationMatch "^/(protected|callback)" >
+      AuthType openid-connect
+      Require valid-user
+    </LocationMatch>
+
+    #LogLevel auth_openidc:debug
+
+</VirtualHost>
+```
+
+### Application files
+
+Let's create two `.html` files to be served by our httpd container. Put these files into the `apache/` folder.
+
+> The `index.html` and `protected.html` pages below share the same Bootstrap boilerplate `<head>` — only the `<main>` content differs (a plain landing page vs. the page behind `/protected`).
+
+#### `index.html`
+
+```html
+<!doctype html>
+<html lang="en" class="h-100" data-bs-theme="auto">
+  <head><script src="/docs/5.3/assets/js/color-modes.js"></script>
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="">
+    <meta name="generator" content="Hugo 0.122.0">
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@docsearch/css@3">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+
+    <meta name="theme-color" content="#712cf9">
+
+    <style>
+      .bd-placeholder-img {
+        font-size: 1.125rem;
+        text-anchor: middle;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        user-select: none;
+      }
+
+      @media (min-width: 768px) {
+        .bd-placeholder-img-lg {
+          font-size: 3.5rem;
+        }
+      }
+
+      .b-example-divider {
+        width: 100%;
+        height: 3rem;
+        background-color: rgba(0, 0, 0, .1);
+        border: solid rgba(0, 0, 0, .15);
+        border-width: 1px 0;
+        box-shadow: inset 0 .5em 1.5em rgba(0, 0, 0, .1), inset 0 .125em .5em rgba(0, 0, 0, .15);
+      }
+
+      .b-example-vr {
+        flex-shrink: 0;
+        width: 1.5rem;
+        height: 100vh;
+      }
+
+      .bi {
+        vertical-align: -.125em;
+        fill: currentColor;
+      }
+
+      .nav-scroller {
+        position: relative;
+        z-index: 2;
+        height: 2.75rem;
+        overflow-y: hidden;
+      }
+
+      .nav-scroller .nav {
+        display: flex;
+        flex-wrap: nowrap;
+        padding-bottom: 1rem;
+        margin-top: -1px;
+        overflow-x: auto;
+        text-align: center;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .btn-bd-primary {
+        --bd-violet-bg: #712cf9;
+        --bd-violet-rgb: 112.520718, 44.062154, 249.437846;
+
+        --bs-btn-font-weight: 600;
+        --bs-btn-color: var(--bs-white);
+        --bs-btn-bg: var(--bd-violet-bg);
+        --bs-btn-border-color: var(--bd-violet-bg);
+        --bs-btn-hover-color: var(--bs-white);
+        --bs-btn-hover-bg: #6528e0;
+        --bs-btn-hover-border-color: #6528e0;
+        --bs-btn-focus-shadow-rgb: var(--bd-violet-rgb);
+        --bs-btn-active-color: var(--bs-btn-hover-color);
+        --bs-btn-active-bg: #5a23c8;
+        --bs-btn-active-border-color: #5a23c8;
+      }
+
+      .bd-mode-toggle {
+        z-index: 1500;
+      }
+
+      .bd-mode-toggle .dropdown-menu .active .bi {
+        display: block !important;
+      }
+    </style>
+
+  </head>
+
+  <body class="d-flex h-100 text-center text-bg-dark">
+
+    <div class="cover-container d-flex w-100 h-100 p-3 mx-auto flex-column">
+        <header class="mb-auto">
+            <div>
+                <h3 class="float-md-center mb-0">HTTPD stack with OpenID Provider</h3>
+            </div>
+        </header>
+
+        <main class="px-3">
+            <h1>Welcome aboard.</h1>
+            <p class="lead">This page is here to present something. To learn more, please authenticate by clicking on the next link.</p>
+            <p class="lead"><a href="/protected" class="btn btn-lg btn-light fw-bold border-white bg-white">Authenticate Here</a></p>
+        </main>
+
+        <footer class="mt-auto text-white-50">
+            <p>Whatever we have to say in a footer.</p>
+        </footer>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    </body>
+</html>
+```
+
+#### `protected.html`
+
+```html
+<!doctype html>
+<html lang="en" class="h-100" data-bs-theme="auto">
+  <head><script src="/docs/5.3/assets/js/color-modes.js"></script>
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="">
+    <meta name="generator" content="Hugo 0.122.0">
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@docsearch/css@3">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+
+    <meta name="theme-color" content="#712cf9">
+
+    <style>
+      .bd-placeholder-img {
+        font-size: 1.125rem;
+        text-anchor: middle;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        user-select: none;
+      }
+
+      @media (min-width: 768px) {
+        .bd-placeholder-img-lg {
+          font-size: 3.5rem;
+        }
+      }
+
+      .b-example-divider {
+        width: 100%;
+        height: 3rem;
+        background-color: rgba(0, 0, 0, .1);
+        border: solid rgba(0, 0, 0, .15);
+        border-width: 1px 0;
+        box-shadow: inset 0 .5em 1.5em rgba(0, 0, 0, .1), inset 0 .125em .5em rgba(0, 0, 0, .15);
+      }
+
+      .b-example-vr {
+        flex-shrink: 0;
+        width: 1.5rem;
+        height: 100vh;
+      }
+
+      .bi {
+        vertical-align: -.125em;
+        fill: currentColor;
+      }
+
+      .nav-scroller {
+        position: relative;
+        z-index: 2;
+        height: 2.75rem;
+        overflow-y: hidden;
+      }
+
+      .nav-scroller .nav {
+        display: flex;
+        flex-wrap: nowrap;
+        padding-bottom: 1rem;
+        margin-top: -1px;
+        overflow-x: auto;
+        text-align: center;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .btn-bd-primary {
+        --bd-violet-bg: #712cf9;
+        --bd-violet-rgb: 112.520718, 44.062154, 249.437846;
+
+        --bs-btn-font-weight: 600;
+        --bs-btn-color: var(--bs-white);
+        --bs-btn-bg: var(--bd-violet-bg);
+        --bs-btn-border-color: var(--bd-violet-bg);
+        --bs-btn-hover-color: var(--bs-white);
+        --bs-btn-hover-bg: #6528e0;
+        --bs-btn-hover-border-color: #6528e0;
+        --bs-btn-focus-shadow-rgb: var(--bd-violet-rgb);
+        --bs-btn-active-color: var(--bs-btn-hover-color);
+        --bs-btn-active-bg: #5a23c8;
+        --bs-btn-active-border-color: #5a23c8;
+      }
+
+      .bd-mode-toggle {
+        z-index: 1500;
+      }
+
+      .bd-mode-toggle .dropdown-menu .active .bi {
+        display: block !important;
+      }
+    </style>
+
+  </head>
+
+  <body class="d-flex h-100 text-center text-bg-dark">
+
+    <div class="cover-container d-flex w-100 h-100 p-3 mx-auto flex-column">
+        <header class="mb-auto">
+            <div>
+                <h3 class="float-md-center mb-0">HTTPD stack with OpenID Provider</h3>
+            </div>
+        </header>
+
+        <main class="px-3">
+            <h1>Welcome Captain.</h1>
+            <p class="lead">This page is protected under the OIDC provider.</p>
+            <img class="lead" src="https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExcGEwcWt4Y2ttejRsdDBvajJhaTVrNzRuczAwdGx0OWNodmxxcmNvYiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/FGbeYTiFyLYmQ/200w.webp" class="card-img-top" alt="pirate">
+        </main>
+
+        <footer class="mt-auto text-white-50">
+            <p>Whatever we have to say in a footer.</p>
+        </footer>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    </body>
+</html>
+```
+
+### `compose.yaml`
+
+```yaml
+...
+  httpd:
+    build:
+      dockerfile: httpd.Dockerfile
+    container_name: httpd_server
+    ports:
+      - "8081:80"
+      - "8082:443"
+    volumes:
+      - ${PWD}/apache/httpd.conf:/usr/local/apache2/conf/httpd.conf
+      - ${PWD}/apache/ssl.conf:/usr/local/apache2/conf/extra/httpd-ssl.conf
+      - ${PWD}/apache/index.html:/usr/local/apache2/htdocs/index.html
+      - ${PWD}/apache/protected.html:/usr/local/apache2/htdocs/protected.html
+      - ${PWD}/mkcert/app/server.crt:/usr/local/apache2/certificates/server.crt
+      - ${PWD}/mkcert/app/server.key:/usr/local/apache2/certificates/server.key
+...
+```
+
+## Testing the entire stack
+
+Now that all the components have been explained, let's install them.
+
+All sources can be found at: [https://github.com/Dawtio/httpd-oidc](https://github.com/Dawtio/httpd-oidc)
+
+```bash
+git clone https://github.com/Dawtio/httpd-oidc.git
+
+cd http-oidc/
+
+# add at the end of the file: 127.0.0.1 hydra_server
+sudo nvim /etc/hosts
+
+# Create certificate and rootCA
+docker compose -f compose-mkcert.yaml up
+
+# Install rootCA on your local machine
+# (macOS only)
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $(pwd)/mkcert/root/rootCA.pem
+
+# Start stack
+docker compose -f compose.yaml up
+```
+
+Now, in your favorite browser, go to `https://localhost:8082`:
+
+![HTTPD landing page](/blog/how-to-deploy-an-httpd-server-with-oidc-provider/deploy-httpd-4.png)
+
+Click on `Authenticate Here`:
+
+![Authenticate Here button](/blog/how-to-deploy-an-httpd-server-with-oidc-provider/deploy-httpd-1.png)
+
+You're now redirected to the `hydra-consent` Docker container.
+
+Credentials are the ones displayed on the screen:
+
+- [foo@bar.com](mailto:foo@bar.com) / foobar
+
+Once logged in, you have to consent to sharing claims with the application:
+
+![Hydra consent screen](/blog/how-to-deploy-an-httpd-server-with-oidc-provider/deploy-httpd-2.png)
+
+And finally, after validation, you're redirected to the httpd server on the protected path:
+
+![Protected page](/blog/how-to-deploy-an-httpd-server-with-oidc-provider/deploy-httpd-3.png)

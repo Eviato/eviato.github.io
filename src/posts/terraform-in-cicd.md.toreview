@@ -1,0 +1,147 @@
+---
+title: "Running Terraform in CI/CD: plan on PR, apply on merge"
+date: 2026-09-11
+excerpt: A GitHub Actions pipeline that enforces the pre-commit checks from my module post for everyone, plans on every PR, and applies only the plan that got reviewed.
+tags: [CI/CD, Terraform]
+---
+
+The `.pre-commit-config.yaml` from [how I create a Terraform module](/blog/how-to-create-a-terraform-module) only helps if it actually runs — and a local git hook is something anyone can skip with `--no-verify`, intentionally or not. This is the part that makes it non-optional: the same checks, running in CI, gating the merge instead of just nudging a contributor.
+
+## The shape of the pipeline
+
+Two triggers, two jobs, one rule tying them together: **whatever gets applied is exactly the plan that got reviewed**, not a fresh one computed after merge.
+
+```mermaid
+flowchart LR
+    A["Pull request opened"] --> B["fmt, validate, tflint, trivy"]
+    B --> C["terraform plan -out=tfplan"]
+    C --> D["Upload tfplan + post plan as PR comment"]
+    D --> E{"Reviewed & merged?"}
+    E -- yes --> F["Download tfplan artifact"]
+    F --> G["terraform apply tfplan"]
+    E -- no --> H["Nothing runs"]
+```
+
+### Plan, on every pull request
+
+```yaml
+# .github/workflows/terraform-plan.yml
+name: terraform plan
+
+on:
+  pull_request:
+    paths: ["infra/**"]
+
+permissions:
+  id-token: write   # for OIDC federation to the cloud provider
+  contents: read
+  pull-requests: write  # to post the plan as a PR comment
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - run: terraform fmt -check -recursive
+      - run: terraform init
+      - run: terraform validate
+
+      - uses: pre-commit/action@v3.0.1
+
+      - run: terraform plan -out=tfplan -input=false
+      - run: terraform show -no-color tfplan > plan.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: infra/tfplan
+          retention-days: 5
+
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs')
+            const plan = fs.readFileSync('infra/plan.txt', 'utf8').slice(0, 60000)
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Terraform plan\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`,
+            })
+```
+
+`pre-commit/action` re-runs the exact same `.pre-commit-config.yaml` hooks — `terraform_fmt`, `terraform_validate`, `terraform_tflint`, `terraform_trivy`, `terraform_docs` — that run locally, so there's one source of truth for what "passing" means, not a separate CI-only checklist that can drift from what's in the repo.
+
+### Apply, only after merge, only the reviewed plan
+
+```yaml
+# .github/workflows/terraform-apply.yml
+name: terraform apply
+
+on:
+  push:
+    branches: [main]
+    paths: ["infra/**"]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production   # requires a manual approval in GitHub, if configured
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: infra
+
+      - run: terraform init
+      - run: terraform apply -input=false tfplan
+```
+
+Two things doing real work here that are easy to skip past:
+
+- **`concurrency.group`** serializes applies against the same state — plans can run concurrently across PRs safely (they're read-only), but two applies racing against the same backend is exactly the "someone else is currently modifying it" lock contention [I covered when going through state](/blog/terraform-certification-preparation#state-where-it-lives-and-what-it-means-for-your-team). Let the queue handle it instead of hitting `-force` in a failed CI run.
+- **`environment: production`** is what lets you require a human approval before the apply job runs, even though it's fully automated otherwise — GitHub Environments support required reviewers natively, so "someone has to click approve before this touches prod" doesn't need a bespoke approval bot.
+
+In practice, matching the artifact between the two workflows (rather than re-running `terraform plan` right before apply) is the detail that actually matters. Re-planning after merge means whatever gets applied might not be what got reviewed, if anything else changed the target infrastructure in between — small window, but it's exactly the gap a review process exists to close.
+
+## Credentials: prefer OIDC federation over long-lived secrets
+
+The `id-token: write` permission and OIDC federation here is the same identity pattern from [my HTTPD/OIDC post](/blog/how-to-deploy-an-httpd-server-with-oidc-provider) — nobody holds a long-lived credential. GitHub issues a short-lived OIDC token scoped to that specific workflow run, and your cloud provider verifies it against a trust relationship you configure once, then hands back temporary credentials:
+
+```yaml
+- uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: arn:aws:iam::123456789012:role/github-actions-terraform
+    aws-region: eu-west-1
+```
+
+No `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY` sitting in repo secrets, nothing to rotate, nothing to leak from a workflow log. If you're already running [Vault](/blog/introduction-to-vault) for secrets elsewhere, the same principle applies — the JWT auth method there and OIDC federation here are the same idea: trust a verifiable token instead of distributing a static credential.
+
+## This works the same with OpenTofu
+
+Nothing above is Terraform-specific in spirit — if you've moved to [OpenTofu](/blog/opentofu-vs-terraform), swap `hashicorp/setup-terraform` for `opentofu/setup-opentofu` and `terraform` for `tofu` in each `run:` step, and the rest of the pipeline — plan-then-apply, artifact matching, concurrency group, OIDC federation — carries over unchanged.

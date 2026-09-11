@@ -1,0 +1,75 @@
+---
+title: "An introduction to Vault: keeping secrets out of your Terraform"
+date: 2026-09-10
+excerpt: Secrets engines, auth methods, and dynamic secrets — the Vault concepts that matter, and how to stop handing Terraform static credentials it doesn't need.
+tags: [Vault, HashiCorp]
+---
+
+I flagged this gap [in my earlier review notes](/blog/terraform-certification-preparation): whatever value ends up in a Terraform resource ends up in the state file too, in plain text. My [HTTPD/OIDC post](/blog/how-to-deploy-an-httpd-server-with-oidc-provider) hardcodes a `client_secret: "my-super-password"` straight into a compose file for exactly that reason — it's a local demo, and I didn't want to make that post depend on a Vault instance to follow along. This is the post that fixes that, and explains what Vault is actually for.
+
+## What Vault does
+
+Vault is a secrets management system built around one idea: nothing should hold a long-lived, static secret if it doesn't have to. That shows up in a few different pieces.
+
+### Secrets engines
+
+A secrets engine is what actually stores or generates a secret. The simplest is **KV v2** — a versioned key-value store, which is what most people picture when they hear "secrets manager":
+
+```bash
+vault kv put secret/httpd-oidc client_secret="a-real-generated-secret"
+vault kv get secret/httpd-oidc
+```
+
+The more interesting engines generate **dynamic secrets** — credentials created on demand, scoped to a short TTL, and revoked automatically. The AWS secrets engine is the clearest example: instead of a long-lived IAM access key sitting in a vault (or worse, a CI secret) forever, Vault mints a fresh IAM credential per request, with a lease, and can revoke it the moment it's no longer needed. The database secrets engine does the same thing for a Postgres or MySQL user. This is the actual differentiator over "just another place to put a password" — a leaked dynamic secret has a blast radius measured in minutes, not until someone remembers to rotate it.
+
+### Auth methods
+
+Before Vault gives out anything, whatever's asking has to authenticate. A few that come up constantly:
+
+- **Tokens** — the base primitive everything else issues, but rarely what you hand out directly.
+- **AppRole** — the standard way for a machine or service (a CI job, an app server) to authenticate without a human involved: a `role_id` (not secret, can live in config) plus a `secret_id` (short-lived, delivered out of band).
+- **Kubernetes auth** — a pod authenticates using its own service account JWT, which Vault verifies against the cluster's API — no separate credential to distribute at all.
+- **OIDC/LDAP** — for humans logging in interactively, against an identity provider you already run.
+
+### Policies
+
+Policies are HCL, and they're deliberately boring — path-based ACLs saying what a token can read, write, or list:
+
+```hcl
+path "secret/data/httpd-oidc" {
+  capabilities = ["read"]
+}
+```
+
+Attach that to an AppRole, and whatever authenticates with it can read exactly that path and nothing else.
+
+## Using Vault from Terraform
+
+The `vault` provider reads secrets into your configuration at plan/apply time, via a data source:
+
+```hcl
+data "vault_kv_secret_v2" "httpd_oidc" {
+  mount = "secret"
+  name  = "httpd-oidc"
+}
+
+resource "..." "hydra_client" {
+  client_secret = data.vault_kv_secret_v2.httpd_oidc.data["client_secret"]
+}
+```
+
+That's the fix for the compose file in my OIDC post — the secret lives in Vault, gets pulled at apply time, and never sits in a repo or a `.env` file.
+
+**The caveat that doesn't go away:** the moment that value is assigned to `client_secret` above, it's in the Terraform state, same as if you'd typed it in directly. Vault solves "where does the secret originate and how do I rotate it," not "does Terraform state need to be treated as sensitive" — that second problem is still yours, exactly as [I noted when covering state](/blog/terraform-certification-preparation#state-where-it-lives-and-what-it-means-for-your-team). Encrypt state at rest, restrict who can read it, and prefer dynamic secrets with a short TTL where you can, so a state file leak is less catastrophic.
+
+## Trying it locally
+
+For anything beyond reading docs, the fastest way to get a feel for Vault is its dev-mode server — in-memory, unsealed, not for anything but your own machine:
+
+```bash
+vault server -dev
+```
+
+It prints a root token on startup; export `VAULT_ADDR` and `VAULT_TOKEN` from that output and the `vault kv put`/`vault kv get` commands above will work immediately. It's the same relationship `terraform` has to a throwaway local backend — good enough to learn the mechanics, not what you'd point production at.
+
+Like Terraform, Vault has an open-source core plus HCP Vault (managed) and Vault Enterprise (self-hosted, with namespaces, replication, and HSM support) for teams that need more than a single unsealed server. The concepts above — engines, auth methods, policies — are identical across all three; what changes is who operates it and what scale it's built for.
