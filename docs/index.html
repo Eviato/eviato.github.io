@@ -2,6 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      GitHub Pages serves this repo with no way to set custom HTTP response
+      headers, so security policy has to be delivered via <meta> tags here
+      instead. Note: `frame-ancestors` and `X-Frame-Options` are NOT
+      honored inside a <meta> CSP by spec — if this domain ever moves
+      behind a proxy/CDN that can set real headers, add those there.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0b0f14" />
@@ -17,7 +29,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <script type="module" crossorigin src="/assets/index-vLBPZoR6.js"></script>
+    <script type="module" crossorigin src="/assets/index-DRZCP4E1.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-DyQmzQM6.css">
   </head>
   <body>

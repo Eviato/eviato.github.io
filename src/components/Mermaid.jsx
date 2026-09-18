@@ -7,6 +7,10 @@ function loadMermaid() {
     mermaidPromise = import('mermaid').then(({ default: mermaid }) => {
       mermaid.initialize({
         startOnLoad: false,
+        // Explicitly pinned (mermaid's own default) rather than left
+        // implicit: this sanitizes diagram output before it reaches the
+        // dangerouslySetInnerHTML below. Never set this to 'loose'.
+        securityLevel: 'strict',
         theme: 'base',
         fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
         themeVariables: {
