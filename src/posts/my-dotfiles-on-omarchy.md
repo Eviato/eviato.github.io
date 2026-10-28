@@ -113,16 +113,7 @@ uncommitted changes:
 
 Dotfiles cover configuration. They don't cover *data*: my projects, documents, photos. For that I keep a separate partition, so the operating system can be wiped without touching my files.
 
-```mermaid
-flowchart TB
-  subgraph disk["NVMe disk"]
-    p3["p3 — EFI<br/>/boot"]
-    p5["p5 — LUKS2 → btrfs<br/>Omarchy root<br/>@ @home @log @pkg"]
-    p1["p1 — LUKS2 → btrfs (1 TB)<br/>DATA<br/>@projects @documents @pictures<br/>@videos @music @downloads @work"]
-  end
-  p5 -- "keyfile on root<br/>unlocks at boot" --> p1
-  p1 -- "one subvolume per folder" --> home["~/Projects ~/Documents ~/Pictures<br/>~/Videos ~/Music ~/Downloads ~/Work"]
-```
+![Disk layout: p3 is the EFI partition mounted on /boot. p5 is the LUKS2 + btrfs Omarchy root. Its keyfile unlocks p1 at boot, a 1 TB LUKS2 + btrfs DATA partition with one subvolume per folder, mounted on ~/Projects, ~/Documents, ~/Pictures, ~/Videos, ~/Music, ~/Downloads and ~/Work.](/blog/my-dotfiles-on-omarchy/data-partition.svg)
 
 How it's set up:
 

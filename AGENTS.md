@@ -18,6 +18,7 @@ See `CLAUDE.md` for the full architecture writeup (routing, blog post pipeline, 
 
 - `docs/` is committed build output, not gitignored — never hand-edit; regenerate via `npm run build`.
 - Never add a static `import 'mermaid'` anywhere except inside `src/components/Mermaid.jsx` (which dynamically `import()`s it). A static import elsewhere pulls mermaid's large diagram chunks into the main bundle for every page. Verify with `npm run build` that `docs/assets/` still has separate `mermaid*`/`*Diagram*` chunks, not weight added to `index-*.js`.
+- Live ` ```mermaid ` blocks render broken on the site: the strict CSP (`style-src` without `'unsafe-inline'`, kept on purpose) blocks mermaid's inline styles. Pre-render diagrams to static SVGs in `public/blog/<slug>/` (with their `.mmd` source) and embed them as images. See `CLAUDE.md` for the render settings.
 - Adding a blog post = just add a frontmattered `.md` file to `src/posts/`; `src/lib/posts.js` auto-discovers it via `import.meta.glob`. Nothing else to register.
 - Design tokens (colors, fonts) live in `src/index.css`'s `@theme` block — add new tokens there instead of hardcoding colors in components.
 - `public/` (not `docs/`) is where `CNAME` and `.nojekyll` are hand-maintained; Vite copies them into `docs/` on build.

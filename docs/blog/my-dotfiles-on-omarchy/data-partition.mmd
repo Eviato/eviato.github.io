@@ -1,0 +1,20 @@
+flowchart TB
+  subgraph disk["NVMe disk"]
+    p3["`**p3** · EFI
+/boot`"]
+    p5["`**p5** · LUKS2 → btrfs
+Omarchy root
+@ · @home · @log · @pkg`"]
+    p1["`**p1** · LUKS2 → btrfs · 1 TB
+DATA
+@projects · @documents
+@pictures · @videos
+@music · @downloads · @work`"]
+  end
+  p5 -- "`keyfile on root
+unlocks at boot`" --> p1
+  p1 -- "`one subvolume
+per folder`" --> home["`~/Projects · ~/Documents
+~/Pictures · ~/Videos
+~/Music · ~/Downloads
+~/Work`"]
